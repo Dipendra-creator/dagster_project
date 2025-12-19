@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+from urllib.parse import quote_plus
 from dagster import asset, AssetExecutionContext, MaterializeResult, ScheduleDefinition, define_asset_job
 from pymongo import MongoClient
 import redis
@@ -10,20 +11,79 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def get_mongo_connection_string():
+    """Build MongoDB connection string based on environment mode"""
+    mode = os.getenv('MODE', 'LOCAL').upper()
+    
+    if mode == 'LOCAL':
+        mongo_uri = os.getenv('LOCAL_MONGO_URI', 'mongodb://localhost:27017/development')
+        db_name = os.getenv('LOCAL_MONGO_DATABASE', 'development')
+        tls_config = {}
+    elif mode == 'DEV':
+        host = os.getenv('DEV_MONGO_HOST')
+        username = os.getenv('DEV_MONGO_USERNAME')
+        password = quote_plus(os.getenv('DEV_MONGO_PASSWORD'))
+        db_name = os.getenv('DEV_MONGO_DATABASE', 'development')
+        mongo_uri = f"mongodb+srv://{username}:{password}@{host}/{db_name}?retryWrites=true&w=majority"
+        tls_config = {
+            'tls': True,
+            'tlsCAFile': os.path.join(os.path.dirname(__file__), '..', 'secrets', 'mgdb-bytescare-backend-development.pem')
+        }
+    elif mode == 'PROD':
+        host = os.getenv('PROD_MONGO_HOST')
+        username = os.getenv('PROD_MONGO_USERNAME')
+        password = quote_plus(os.getenv('PROD_MONGO_PASSWORD'))
+        db_name = os.getenv('PROD_MONGO_DATABASE', 'production')
+        mongo_uri = f"mongodb+srv://{username}:{password}@{host}/{db_name}?retryWrites=true&w=majority"
+        tls_config = {
+            'tls': True,
+            'tlsCAFile': os.path.join(os.path.dirname(__file__), '..', 'secrets', 'mgdb-bytescare-backend-production.pem')
+        }
+    else:
+        raise ValueError(f"Invalid MODE: {mode}. Must be LOCAL, DEV, or PROD")
+    
+    return mongo_uri, db_name, tls_config
+
+
+def get_redis_connection():
+    """Build Redis connection based on environment mode"""
+    mode = os.getenv('MODE', 'LOCAL').upper()
+    
+    if mode == 'LOCAL':
+        return redis.Redis(
+            host=os.getenv('LOCAL_REDIS_HOST', 'localhost'),
+            port=int(os.getenv('LOCAL_REDIS_PORT', 6379)),
+            db=int(os.getenv('LOCAL_REDIS_DB', 0)),
+            decode_responses=True
+        )
+    else:  # DEV or PROD
+        return redis.Redis(
+            host=os.getenv('REDIS_HOST', '163.172.146.221'),
+            port=int(os.getenv('REDIS_PORT', 6379)),
+            username=os.getenv('REDIS_USERNAME', 'bytescare'),
+            password=os.getenv('REDIS_PASSWORD'),
+            db=int(os.getenv('REDIS_DB', 0)),
+            ssl=True,
+            ssl_ca_certs=os.path.join(os.path.dirname(__file__), '..', 'secrets', 'SSL_redis-bytescare.pem'),
+            decode_responses=True
+        )
+
+
 @asset(
     group_name="monthly_reporting_pipeline",
     description="Fetches client IDs from MongoDB where reporting is enabled"
 )
 def mongodb_clients(context: AssetExecutionContext) -> dict:
     """Fetch all clients from MongoDB where reporting is True"""
-    mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/development')
-    db_name = os.getenv('DATABASE_NAME', 'development')
+    mongo_uri, db_name, tls_config = get_mongo_connection_string()
     collection_name = os.getenv('CLIENTS_COLLECTION', 'clients')
     
-    context.log.info(f"Connecting to MongoDB: {mongo_uri}")
+    mode = os.getenv('MODE', 'LOCAL')
+    context.log.info(f"Running in {mode} mode")
+    context.log.info(f"Connecting to MongoDB: {mongo_uri.split('@')[-1] if '@' in mongo_uri else mongo_uri}")
     
     try:
-        client = MongoClient(mongo_uri)
+        client = MongoClient(mongo_uri, **tls_config)
         db = client[db_name]
         collection = db[collection_name]
         
@@ -58,14 +118,11 @@ def mongodb_clients(context: AssetExecutionContext) -> dict:
 )
 def redis_monthly_reports(context: AssetExecutionContext, mongodb_clients: dict) -> MaterializeResult:
     """Push monthly reporting messages to Redis for each client"""
-    redis_host = os.getenv('REDIS_HOST', 'localhost')
-    redis_port = int(os.getenv('REDIS_PORT', 6379))
-    redis_db = int(os.getenv('REDIS_DB', 0))
-    
-    context.log.info(f"Connecting to Redis: {redis_host}:{redis_port}")
+    mode = os.getenv('MODE', 'LOCAL')
+    context.log.info(f"Running in {mode} mode")
     
     try:
-        r = redis.Redis(host=redis_host, port=redis_port, db=redis_db, decode_responses=True)
+        r = get_redis_connection()
         
         # Test connection
         r.ping()

@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
 # Copy project files
 COPY pyproject.toml setup.py setup.cfg ./
 COPY dragster_project/ ./dragster_project/
+COPY secrets/ ./secrets/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
