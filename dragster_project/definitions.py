@@ -6,4 +6,6 @@ all_assets = load_assets_from_modules([assets])
 
 defs = Definitions(
     assets=all_assets,
+    schedules=[assets.monthly_reporting_schedule],
+    jobs=[assets.monthly_reporting_job],
 )

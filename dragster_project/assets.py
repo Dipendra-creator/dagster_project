@@ -2,7 +2,7 @@ import os
 import json
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-from dagster import asset, AssetExecutionContext, MaterializeResult
+from dagster import asset, AssetExecutionContext, MaterializeResult, ScheduleDefinition, define_asset_job
 from pymongo import MongoClient
 import redis
 from dotenv import load_dotenv
@@ -74,11 +74,14 @@ def redis_monthly_reports(context: AssetExecutionContext, mongodb_clients: dict)
         clients = mongodb_clients.get("clients", [])
         
         # Calculate date range for monthly report
-        # Start date: first day of current month
-        # End date: last day of current month
+        # Start date: first day of last month
+        # End date: last day of last month
         now = datetime.now()
-        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = (start_date + relativedelta(months=1)) - timedelta(seconds=1)
+        # Get first day of current month, then subtract 1 month
+        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_date = first_day_current_month - relativedelta(months=1)
+        # End date is the last second of last month (one second before first day of current month)
+        end_date = first_day_current_month - timedelta(seconds=1)
         
         published_count = 0
         
@@ -126,3 +129,18 @@ def redis_monthly_reports(context: AssetExecutionContext, mongodb_clients: dict)
         context.log.error(f"Error publishing to Redis: {e}")
         raise
 
+
+# Define a job that materializes both assets
+monthly_reporting_job = define_asset_job(
+    name="monthly_reporting_job",
+    selection=["mongodb_clients", "redis_monthly_reports"],
+    description="Monthly job to fetch clients and publish reporting messages to Redis"
+)
+
+# Define a monthly schedule that runs on the 1st day of each month at 2:00 AM
+monthly_reporting_schedule = ScheduleDefinition(
+    job=monthly_reporting_job,
+    cron_schedule="0 2 1 * *",  # At 02:00 on day-of-month 1
+    name="monthly_reporting_schedule",
+    description="Runs monthly reporting job on the 1st of each month at 2:00 AM"
+)
