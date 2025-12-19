@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # MongoDB service
+  mongodb:
+    image: mongo:7.0
+    container_name: dragster_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: development
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
+    networks:
+      - dragster_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/development --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis service
+  redis:
+    image: redis:7-alpine
+    container_name: dragster_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - dragster_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Dagster application
+  dagster:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dragster_dagster
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/development
+      DATABASE_NAME: development
+      CLIENTS_COLLECTION: clients
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      DAGSTER_HOME: /app/dagster_home
+    volumes:
+      - ./dragster_project:/app/dragster_project
+      - dagster_home:/app/dagster_home
+    networks:
+      - dragster_network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["dagster", "dev", "-h", "0.0.0.0", "-p", "3000"]
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  dagster_home:
+    driver: local
+
+networks:
+  dragster_network:
+    driver: bridge
